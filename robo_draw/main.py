@@ -1,7 +1,6 @@
 import sys
 from pathlib import Path
 
-import click
 import typer
 from mephew_python_commons import LoggerFactory
 
