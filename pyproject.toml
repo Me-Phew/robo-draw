@@ -1,0 +1,21 @@
+[project]
+name = "robo-draw"
+version = "0.1.0"
+description = "An SVG drawing application for robots."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.3.5",
+    "pydantic>=2.12.4",
+    "pydantic-settings>=2.12.0",
+    "robodk>=5.9.2",
+    "svgpathtools>=1.7.1",
+    "typer>=0.20.0",
+    "mephew-python-commons",
+]
+
+[tool.uv.sources]
+mephew-python-commons = { git = "https://github.com/Me-Phew/mephew-python-commons.git" }
+
+[tool.isort]
+profile = "black"
