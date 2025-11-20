@@ -17,8 +17,8 @@ def main(
     use_visual_simulation: bool = typer.Option(
         False, help="Whether to use visual simulation (requires additional items)"
     ),
-    pixel_item_name: str = typer.Option(None, help="Name of the pixel item for visual simulation"),
-    board_item_name: str = typer.Option(None, help="Name of the board item for visual simulation"),
+    pixel_item_name: str = typer.Option("Pixel", help="Name of the pixel item for visual simulation"),
+    board_item_name: str = typer.Option("Drawing Board", help="Name of the board item for visual simulation"),
     approach_dist: int = typer.Option(50, help="Approach distance in mm"),
     scale: float = typer.Option(1.0, help="Scaling factor for the drawing"),
     resolution: float = typer.Option(2.0, help="Resolution in mm per point"),
