@@ -4,7 +4,7 @@ from robodk import robolink, robomath
 
 from .draw_options import DrawOptions
 from .settings import RoboDrawerSettings
-from .utils import get_points_from_path
+from .utils import get_points_from_path, simplify_points
 
 
 class RoboDrawer:
@@ -246,6 +246,13 @@ class RoboDrawer:
                 self._logger.warning(f"Path {i+1} has no points after discretization; skipping.")
                 continue
 
+            # Optimization: Simplify path using Ramer-Douglas-Peucker algorithm
+            original_count = len(points_2d)
+            # 0.1mm tolerance converted to SVG units
+            epsilon = 0.1 / draw_options.scale
+            points_2d = simplify_points(points_2d, epsilon)
+            self._logger.info(f"Path {i+1} simplified from {original_count} to {len(points_2d)} points.")
+
             self._logger.info(f"Drawing path {i+1}/{total_paths} with {len(points_2d)} points.")
 
             p0 = points_2d[0]
@@ -268,7 +275,7 @@ class RoboDrawer:
                 # Execute pending retract from previous path if we are not continuous
                 if pending_retract_pose is not None:
                     self._logger.info(f"Retracting after completing previous path.")
-                    self._robot.MoveL(pending_retract_pose)
+                    self._robot.MoveJ(pending_retract_pose)
                     self._logger.info(f"Retracted.")
                     pending_retract_pose = None
 
@@ -284,7 +291,7 @@ class RoboDrawer:
                 self._logger.debug("Path is continuous with previous one. Skipping retract/approach.")
 
             self._logger.info(f"Moving down to target pose for path {i+1}.")
-            self._robot.MoveL(target_pose)
+            self._robot.MoveJ(target_pose)
             self._logger.info(f"Moved down to target pose for path {i+1}.")
 
             self._logger.info(f"Tracing the curve for path {i+1}.")
@@ -294,7 +301,7 @@ class RoboDrawer:
                 self._logger.debug(f"Calculated target pose for point: {target_pose}")
 
                 self._logger.info(f"Moving to point at X={p.x}, Y={p.y}.")
-                self._robot.MoveL(target_pose)
+                self._robot.MoveJ(target_pose)
                 self._logger.info(f"Moved to point at X={p.x}, Y={p.y}.")
 
                 if draw_options.use_visual_simulation:
@@ -311,7 +318,7 @@ class RoboDrawer:
         # Final retract
         if pending_retract_pose is not None:
             self._logger.info("Final retract.")
-            self._robot.MoveL(pending_retract_pose)
+            self._robot.MoveJ(pending_retract_pose)
             self._logger.info("Final retract completed.")
 
         self._logger.info("Returning robot to home position.")
