@@ -83,6 +83,10 @@ class RoboDrawer:
 
         paths, attributes, _ = self._load_svg(str(draw_options.svg_path))
 
+        self._logger.info("Optimizing path order...")
+        paths, attributes = self._optimize_path_order(paths, attributes)
+        self._logger.info("Path optimization completed.")
+
         self._draw_svg(draw_options, paths, attributes)
 
         self._logger.info("Drawing process completed.")
@@ -147,6 +151,68 @@ class RoboDrawer:
 
         return paths, attributes, rest
 
+    def _optimize_path_order(
+        self, paths: list[svgpathtools.Path], attributes: list[dict[str, str]]
+    ) -> tuple[list[svgpathtools.Path], list[dict[str, str]]]:
+        """
+        Reorders paths using a greedy nearest-neighbor strategy to minimize travel distance.
+        Also reverses paths if starting from the end is closer.
+        """
+        if not paths:
+            return [], []
+
+        current_pos = complex(0, 0)
+        remaining = list(zip(paths, attributes))
+        ordered_paths = []
+        ordered_attributes = []
+
+        while remaining:
+            best_idx = -1
+            best_dist = float("inf")
+            should_reverse = False
+
+            for i, (p, _) in enumerate(remaining):
+                try:
+                    d_start = abs(p.start - current_pos)
+                except Exception:
+                    d_start = float("inf")
+
+                if d_start < best_dist:
+                    best_dist = d_start
+                    best_idx = i
+                    should_reverse = False
+
+                try:
+                    d_end = abs(p.end - current_pos)
+                except Exception:
+                    d_end = float("inf")
+
+                if d_end < best_dist:
+                    best_dist = d_end
+                    best_idx = i
+                    should_reverse = True
+
+            if best_idx == -1:
+                break
+
+            p, attr = remaining.pop(best_idx)
+
+            if should_reverse:
+                try:
+                    p = p.reversed()
+                except Exception:
+                    pass
+
+            ordered_paths.append(p)
+            ordered_attributes.append(attr)
+
+            try:
+                current_pos = p.end
+            except Exception:
+                pass
+
+        return ordered_paths, ordered_attributes
+
     def _draw_svg(
         self, draw_options: DrawOptions, paths: list[svgpathtools.Path], attributes: list[dict[str, str]]
     ) -> None:
@@ -170,6 +236,9 @@ class RoboDrawer:
         self._robot.MoveJ(self._robot.JointsHome())
         self._logger.info("Moved robot to home position.")
 
+        last_end_point = None
+        pending_retract_pose = None
+
         for i, (path, attr) in enumerate(zip(paths, attributes)):
             points_2d = get_points_from_path(path, step_mm=draw_options.resolution / draw_options.scale)
 
@@ -182,31 +251,44 @@ class RoboDrawer:
             p0 = points_2d[0]
             self._logger.debug(f"Starting point of path: {p0}")
 
+            # Check continuity with previous path
+            is_continuous = False
+            if last_end_point is not None:
+                dist = ((p0.x - last_end_point.x) ** 2 + (p0.y - last_end_point.y) ** 2) ** 0.5
+                if dist < 1.0:  # 1mm tolerance for continuity
+                    is_continuous = True
+
             target_pose = robomath.transl(p0.x * draw_options.scale, p0.y * draw_options.scale, 0) * orient_tool
             self._logger.debug(f"Calculated target pose: {target_pose}")
 
             approach_pose = target_pose * robomath.transl(0, 0, draw_options.approach_dist)
             self._logger.debug(f"Calculated approach pose: {approach_pose}")
 
-            try:
-                self._logger.info(f"Moving to approach pose for path {i+1}.")
-                self._robot.MoveJ(approach_pose)
-                self._logger.info(f"Moved to approach pose for path {i+1}.")
-            except Exception as e:
-                self._logger.exception(f"Robot cannot reach start of path {i+1}. Exception: {e}")
-                self._logger.error("Ensure 'Frame draw' is within reach (approx X=300mm, Y=0mm).")
-                raise
+            if not is_continuous:
+                # Execute pending retract from previous path if we are not continuous
+                if pending_retract_pose is not None:
+                    self._logger.info(f"Retracting after completing previous path.")
+                    self._robot.MoveL(pending_retract_pose)
+                    self._logger.info(f"Retracted.")
+                    pending_retract_pose = None
+
+                try:
+                    self._logger.info(f"Moving to approach pose for path {i+1}.")
+                    self._robot.MoveJ(approach_pose)
+                    self._logger.info(f"Moved to approach pose for path {i+1}.")
+                except Exception as e:
+                    self._logger.exception(f"Robot cannot reach start of path {i+1}. Exception: {e}")
+                    self._logger.error("Ensure 'Frame draw' is within reach (approx X=300mm, Y=0mm).")
+                    raise
+            else:
+                self._logger.debug("Path is continuous with previous one. Skipping retract/approach.")
 
             self._logger.info(f"Moving down to target pose for path {i+1}.")
             self._robot.MoveL(target_pose)
             self._logger.info(f"Moved down to target pose for path {i+1}.")
 
-            self._logger.info(f"Moving down to touch the drawing surface for path {i+1}.")
-            self._robot.MoveL(target_pose)
-            self._logger.info(f"Moved down to touch the drawing surface for path {i+1}.")
-
             self._logger.info(f"Tracing the curve for path {i+1}.")
-            for p in points_2d:
+            for p in points_2d[1:]:
                 self._logger.debug(f"Drawing point: {p}")
                 target_pose = robomath.transl(p.x * draw_options.scale, p.y * draw_options.scale, 0) * orient_tool
                 self._logger.debug(f"Calculated target pose for point: {target_pose}")
@@ -221,9 +303,16 @@ class RoboDrawer:
                     self._board.AddGeometry(self._pixel, target_pose)
                     self._logger.debug("Added pixel geometry to board for visual simulation.")
 
-            self._logger.info(f"Retracting after completing path {i+1}.")
-            self._robot.MoveL(target_pose * robomath.transl(0, 0, -draw_options.approach_dist))
-            self._logger.info(f"Retracted after completing path {i+1}.")
+            # Update last state
+            last_end_point = points_2d[-1]
+            # Prepare retract pose but don't execute yet (Lazy Retract)
+            pending_retract_pose = target_pose * robomath.transl(0, 0, -draw_options.approach_dist)
+
+        # Final retract
+        if pending_retract_pose is not None:
+            self._logger.info("Final retract.")
+            self._robot.MoveL(pending_retract_pose)
+            self._logger.info("Final retract completed.")
 
         self._logger.info("Returning robot to home position.")
         self._robot.MoveJ(self._robot.JointsHome())
