@@ -85,7 +85,7 @@ class RoboDrawer:
         paths, attributes, _ = self._load_svg(str(draw_options.svg_path))
 
         self._logger.info("Optimizing path order...")
-        paths, attributes = self._optimize_path_order(paths, attributes)
+        paths, attributes = self._optimize_path_order(paths, attributes, draw_options)
         self._logger.info("Path optimization completed.")
 
         self._draw_svg(draw_options, paths, attributes)
@@ -153,16 +153,23 @@ class RoboDrawer:
         return paths, attributes, rest
 
     def _optimize_path_order(
-        self, paths: list[svgpathtools.Path], attributes: list[dict[str, str]]
+        self, paths: list[svgpathtools.Path], attributes: list[dict[str, str]], draw_options: DrawOptions
     ) -> tuple[list[svgpathtools.Path], list[dict[str, str]]]:
         """
-        Reorders paths using a greedy nearest-neighbor strategy to minimize travel distance.
-        Also reverses paths if starting from the end is closer.
+        Reorders paths using a greedy nearest-neighbor strategy to minimize joint travel distance.
+        Also reverses paths if starting from the end is closer in joint space.
         """
         if not paths:
             return [], []
 
-        current_pos = complex(0, 0)
+        try:
+            current_joints = self._robot.Joints().list()
+        except Exception:
+            self._logger.warning("Could not get robot joints, assuming all zeros.")
+            current_joints = [0.0] * 6
+
+        orient_tool = robomath.rotx(180 * robomath.pi / 180)
+
         remaining = list(zip(paths, attributes))
         ordered_paths = []
         ordered_attributes = []
@@ -173,44 +180,78 @@ class RoboDrawer:
             should_reverse = False
 
             for i, (p, _) in enumerate(remaining):
+                # Check start
                 try:
-                    d_start = abs(p.start - current_pos)
+                    pose_start = robomath.transl(p.start.real * draw_options.scale, p.start.imag * draw_options.scale, 0) * orient_tool
+                    joints_start_mat = self._robot.SolveIK(pose_start, joints_approx=current_joints, reference=self._frame)
+                    joints_start = joints_start_mat.list()
+
+                    if len(joints_start) > 0:
+                        dist_start = max([abs(j1 - j2) for j1, j2 in zip(current_joints, joints_start)])
+
+                        if dist_start < best_dist:
+                            best_dist = dist_start
+                            best_idx = i
+                            should_reverse = False
                 except Exception:
-                    d_start = float("inf")
+                    pass
 
-                if d_start < best_dist:
-                    best_dist = d_start
-                    best_idx = i
-                    should_reverse = False
-
+                # Check end (reverse)
                 try:
-                    d_end = abs(p.end - current_pos)
-                except Exception:
-                    d_end = float("inf")
+                    pose_end = robomath.transl(p.end.real * draw_options.scale, p.end.imag * draw_options.scale, 0) * orient_tool
+                    joints_end_mat = self._robot.SolveIK(pose_end, joints_approx=current_joints, reference=self._frame)
+                    joints_end = joints_end_mat.list()
 
-                if d_end < best_dist:
-                    best_dist = d_end
-                    best_idx = i
-                    should_reverse = True
+                    if len(joints_end) > 0:
+                        dist_end = max([abs(j1 - j2) for j1, j2 in zip(current_joints, joints_end)])
+
+                        if dist_end < best_dist:
+                            best_dist = dist_end
+                            best_idx = i
+                            should_reverse = True
+                except Exception:
+                    pass
 
             if best_idx == -1:
+                self._logger.warning("No reachable path found among remaining paths. Appending rest as is.")
+                for p, attr in remaining:
+                    ordered_paths.append(p)
+                    ordered_attributes.append(attr)
                 break
 
             p, attr = remaining.pop(best_idx)
 
+            # Update current_joints to the end of the selected path
             if should_reverse:
+                pose_move_start = robomath.transl(p.end.real * draw_options.scale, p.end.imag * draw_options.scale, 0) * orient_tool
+                joints_move_start_mat = self._robot.SolveIK(pose_move_start, joints_approx=current_joints, reference=self._frame)
+                joints_move_start = joints_move_start_mat.list()
+
+                if len(joints_move_start) > 0:
+                    pose_move_end = robomath.transl(p.start.real * draw_options.scale, p.start.imag * draw_options.scale, 0) * orient_tool
+                    joints_move_end_mat = self._robot.SolveIK(pose_move_end, joints_approx=joints_move_start, reference=self._frame)
+                    joints_move_end = joints_move_end_mat.list()
+                    if len(joints_move_end) > 0:
+                        current_joints = joints_move_end
+                
                 try:
                     p = p.reversed()
                 except Exception:
                     pass
+            else:
+                pose_move_start = robomath.transl(p.start.real * draw_options.scale, p.start.imag * draw_options.scale, 0) * orient_tool
+                joints_move_start_mat = self._robot.SolveIK(pose_move_start, joints_approx=current_joints, reference=self._frame)
+                joints_move_start = joints_move_start_mat.list()
+
+                if len(joints_move_start) > 0:
+                    pose_move_end = robomath.transl(p.end.real * draw_options.scale, p.end.imag * draw_options.scale, 0) * orient_tool
+                    joints_move_end_mat = self._robot.SolveIK(pose_move_end, joints_approx=joints_move_start, reference=self._frame)
+                    joints_move_end = joints_move_end_mat.list()
+                    if len(joints_move_end) > 0:
+                        current_joints = joints_move_end
 
             ordered_paths.append(p)
             ordered_attributes.append(attr)
-
-            try:
-                current_pos = p.end
-            except Exception:
-                pass
 
         return ordered_paths, ordered_attributes
 
@@ -236,6 +277,12 @@ class RoboDrawer:
         self._logger.info("Moving robot to home position.")
         self._go_home()
         self._logger.info("Moved robot to home position.")
+
+        try:
+            last_joints = self._robot.Joints().list()
+        except Exception:
+            self._logger.warning("Could not get robot joints, assuming all zeros.")
+            last_joints = [0.0] * 6
 
         last_end_point = None
         pending_retract_pose = None
@@ -276,13 +323,13 @@ class RoboDrawer:
                 # Execute pending retract from previous path if we are not continuous
                 if pending_retract_pose is not None:
                     self._logger.info(f"Retracting after completing previous path.")
-                    self._robot.MoveJ(pending_retract_pose)
+                    last_joints = self._move_j_ik(pending_retract_pose, last_joints)
                     self._logger.info(f"Retracted.")
                     pending_retract_pose = None
 
                 try:
                     self._logger.info(f"Moving to approach pose for path {i+1}.")
-                    self._robot.MoveJ(approach_pose)
+                    last_joints = self._move_j_ik(approach_pose, last_joints)
                     self._logger.info(f"Moved to approach pose for path {i+1}.")
                 except Exception as e:
                     self._logger.exception(f"Robot cannot reach start of path {i+1}. Exception: {e}")
@@ -292,7 +339,7 @@ class RoboDrawer:
                 self._logger.debug("Path is continuous with previous one. Skipping retract/approach.")
 
             self._logger.info(f"Moving down to target pose for path {i+1}.")
-            self._robot.MoveJ(target_pose)
+            last_joints = self._move_j_ik(target_pose, last_joints)
             self._logger.info(f"Moved down to target pose for path {i+1}.")
 
             self._logger.info(f"Tracing the curve for path {i+1}.")
@@ -302,7 +349,7 @@ class RoboDrawer:
                 self._logger.debug(f"Calculated target pose for point: {target_pose}")
 
                 self._logger.info(f"Moving to point at X={p.x}, Y={p.y}.")
-                self._robot.MoveJ(target_pose)
+                last_joints = self._move_j_ik(target_pose, last_joints)
                 self._logger.info(f"Moved to point at X={p.x}, Y={p.y}.")
 
                 if draw_options.use_visual_simulation:
@@ -311,8 +358,13 @@ class RoboDrawer:
                     self._board.AddGeometry(self._pixel, target_pose)
                     self._logger.debug("Added pixel geometry to board for visual simulation.")
 
+            last_end_point = points_2d[-1]
+            end_pose = robomath.transl(last_end_point.x * draw_options.scale, last_end_point.y * draw_options.scale, 0) * orient_tool
+            pending_retract_pose = end_pose * robomath.transl(0, 0, draw_options.approach_dist)
+
         self._logger.info("All paths drawn. Retracting drawing tool.")
-        self._robot.MoveJ(approach_pose)
+        if pending_retract_pose is not None:
+            last_joints = self._move_j_ik(pending_retract_pose, last_joints)
         self._logger.info("Drawing tool retracted.")
 
         self._logger.info("Returning robot to home position.")
@@ -320,6 +372,23 @@ class RoboDrawer:
         self._logger.info("Robot returned to home position.")
 
         self._logger.info("SVG drawing routine completed.")
+
+    def _move_j_ik(self, pose, last_joints: list[float]) -> list[float]:
+        """
+        Moves the robot to the specified pose using Joint movement,
+        calculating the inverse kinematics with the previous joints as approximation.
+        Returns the new joints.
+        """
+        ik_result = self._robot.SolveIK(pose, joints_approx=last_joints, reference=self._frame)
+        joints = ik_result.list()
+        
+        if len(joints) > 0:
+            self._robot.MoveJ(joints)
+            return joints
+        else:
+            self._logger.warning("SolveIK failed to find a solution. Attempting MoveJ with pose directly.")
+            self._robot.MoveJ(pose)
+            return self._robot.Joints().list()
 
     def _go_home(self) -> None:
         self._logger.debug(f"Default home position: {self._robot.JointsHome()}")
