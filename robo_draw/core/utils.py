@@ -23,7 +23,7 @@ def get_points_from_path(path: svgpathtools.Path, step_mm: float = 5.0) -> list[
     if not path_len:
         return []
 
-    if path_len < 0.1:
+    if path_len < 0.5:
         return []
 
     num_steps = int(path_len / step_mm)

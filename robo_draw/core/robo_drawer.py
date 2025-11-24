@@ -108,7 +108,7 @@ class RoboDrawer:
 
         self._logger.info(f"Tool item '{draw_options.tool_item_name}' obtained.")
 
-        self._robot.setTool(self._tool)
+        # self._robot.setTool(self._tool)
 
         if not draw_options.use_visual_simulation:
             self._pixel = None
@@ -223,8 +223,8 @@ class RoboDrawer:
         self._robot.setPoseFrame(self._frame)
         self._logger.debug(f"Set robot frame to '{self._frame.Name()}'.")
 
-        self._robot.setPoseTool(self._tool)
-        self._logger.debug(f"Set robot tool to '{self._tool.Name()}'.")
+        # self._robot.setPoseTool(self._tool)
+        # self._logger.debug(f"Set robot tool to '{self._tool.Name()}'.")
 
         orient_tool = robomath.rotx(180 * robomath.pi / 180)
         self._logger.debug(f"Calculated tool orientation matrix: {orient_tool}")
@@ -233,7 +233,7 @@ class RoboDrawer:
         self._logger.info(f"Total paths to draw: {total_paths}")
 
         self._logger.info("Moving robot to home position.")
-        self._robot.MoveJ(self._robot.JointsHome())
+        self._go_home()
         self._logger.info("Moved robot to home position.")
 
         last_end_point = None
@@ -249,7 +249,7 @@ class RoboDrawer:
             # Optimization: Simplify path using Ramer-Douglas-Peucker algorithm
             original_count = len(points_2d)
             # 0.1mm tolerance converted to SVG units
-            epsilon = 0.1 / draw_options.scale
+            epsilon = 0.5 / draw_options.scale
             points_2d = simplify_points(points_2d, epsilon)
             self._logger.info(f"Path {i+1} simplified from {original_count} to {len(points_2d)} points.")
 
@@ -310,19 +310,21 @@ class RoboDrawer:
                     self._board.AddGeometry(self._pixel, target_pose)
                     self._logger.debug("Added pixel geometry to board for visual simulation.")
 
-            # Update last state
-            last_end_point = points_2d[-1]
-            # Prepare retract pose but don't execute yet (Lazy Retract)
-            pending_retract_pose = target_pose * robomath.transl(0, 0, -draw_options.approach_dist)
-
-        # Final retract
-        if pending_retract_pose is not None:
-            self._logger.info("Final retract.")
-            self._robot.MoveJ(pending_retract_pose)
-            self._logger.info("Final retract completed.")
+        self._logger.info("All paths drawn. Retracting drawing tool.")
+        self._robot.MoveJ(approach_pose)
+        self._logger.info("Drawing tool retracted.")
 
         self._logger.info("Returning robot to home position.")
-        self._robot.MoveJ(self._robot.JointsHome())
+        self._go_home()
         self._logger.info("Robot returned to home position.")
 
         self._logger.info("SVG drawing routine completed.")
+
+    def _go_home(self) -> None:
+        self._logger.debug(f"Default home position: {self._robot.JointsHome()}")
+
+        custom_home = [0, -70, -95, -104, 90, -20]
+        self._logger.debug(f"Custom home position: {custom_home}")
+
+        self._logger.info("Moving to custom home position.")
+        self._robot.MoveJ(custom_home)
