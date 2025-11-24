@@ -169,6 +169,7 @@ class RoboDrawer:
             current_joints = [0.0] * 6
 
         orient_tool = robomath.rotx(180 * robomath.pi / 180)
+        frame_pose = self._frame.Pose()
 
         remaining = list(zip(paths, attributes))
         ordered_paths = []
@@ -183,7 +184,7 @@ class RoboDrawer:
                 # Check start
                 try:
                     pose_start = robomath.transl(p.start.real * draw_options.scale, p.start.imag * draw_options.scale, 0) * orient_tool
-                    joints_start_mat = self._robot.SolveIK(pose_start, joints_approx=current_joints, reference=self._frame)
+                    joints_start_mat = self._robot.SolveIK(pose_start, joints_approx=current_joints, reference=frame_pose)
                     joints_start = joints_start_mat.list()
 
                     if len(joints_start) > 0:
@@ -199,7 +200,7 @@ class RoboDrawer:
                 # Check end (reverse)
                 try:
                     pose_end = robomath.transl(p.end.real * draw_options.scale, p.end.imag * draw_options.scale, 0) * orient_tool
-                    joints_end_mat = self._robot.SolveIK(pose_end, joints_approx=current_joints, reference=self._frame)
+                    joints_end_mat = self._robot.SolveIK(pose_end, joints_approx=current_joints, reference=frame_pose)
                     joints_end = joints_end_mat.list()
 
                     if len(joints_end) > 0:
@@ -224,12 +225,12 @@ class RoboDrawer:
             # Update current_joints to the end of the selected path
             if should_reverse:
                 pose_move_start = robomath.transl(p.end.real * draw_options.scale, p.end.imag * draw_options.scale, 0) * orient_tool
-                joints_move_start_mat = self._robot.SolveIK(pose_move_start, joints_approx=current_joints, reference=self._frame)
+                joints_move_start_mat = self._robot.SolveIK(pose_move_start, joints_approx=current_joints, reference=frame_pose)
                 joints_move_start = joints_move_start_mat.list()
 
                 if len(joints_move_start) > 0:
                     pose_move_end = robomath.transl(p.start.real * draw_options.scale, p.start.imag * draw_options.scale, 0) * orient_tool
-                    joints_move_end_mat = self._robot.SolveIK(pose_move_end, joints_approx=joints_move_start, reference=self._frame)
+                    joints_move_end_mat = self._robot.SolveIK(pose_move_end, joints_approx=joints_move_start, reference=frame_pose)
                     joints_move_end = joints_move_end_mat.list()
                     if len(joints_move_end) > 0:
                         current_joints = joints_move_end
@@ -240,12 +241,12 @@ class RoboDrawer:
                     pass
             else:
                 pose_move_start = robomath.transl(p.start.real * draw_options.scale, p.start.imag * draw_options.scale, 0) * orient_tool
-                joints_move_start_mat = self._robot.SolveIK(pose_move_start, joints_approx=current_joints, reference=self._frame)
+                joints_move_start_mat = self._robot.SolveIK(pose_move_start, joints_approx=current_joints, reference=frame_pose)
                 joints_move_start = joints_move_start_mat.list()
 
                 if len(joints_move_start) > 0:
                     pose_move_end = robomath.transl(p.end.real * draw_options.scale, p.end.imag * draw_options.scale, 0) * orient_tool
-                    joints_move_end_mat = self._robot.SolveIK(pose_move_end, joints_approx=joints_move_start, reference=self._frame)
+                    joints_move_end_mat = self._robot.SolveIK(pose_move_end, joints_approx=joints_move_start, reference=frame_pose)
                     joints_move_end = joints_move_end_mat.list()
                     if len(joints_move_end) > 0:
                         current_joints = joints_move_end
@@ -379,7 +380,7 @@ class RoboDrawer:
         calculating the inverse kinematics with the previous joints as approximation.
         Returns the new joints.
         """
-        ik_result = self._robot.SolveIK(pose, joints_approx=last_joints, reference=self._frame)
+        ik_result = self._robot.SolveIK(pose, joints_approx=last_joints, reference=self._frame.Pose())
         joints = ik_result.list()
         
         if len(joints) > 0:
