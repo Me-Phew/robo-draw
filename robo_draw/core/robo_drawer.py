@@ -271,6 +271,8 @@ class RoboDrawer:
 
         orient_tool = robomath.rotx(180 * robomath.pi / 180)
         self._logger.debug(f"Calculated tool orientation matrix: {orient_tool}")
+        
+        frame_pose = self._frame.Pose()
 
         total_paths = len(paths)
         self._logger.info(f"Total paths to draw: {total_paths}")
@@ -287,8 +289,11 @@ class RoboDrawer:
 
         last_end_point = None
         pending_retract_pose = None
+        
+        execution_queue = []
+        self._logger.info("Planning movements...")
 
-        for i, (path, attr) in enumerate(zip(tqdm(paths), attributes)):
+        for i, (path, attr) in enumerate(zip(tqdm(paths, desc="Planning"), attributes)):
             points_2d = get_points_from_path(path, step_mm=draw_options.resolution / draw_options.scale)
 
             if not points_2d:
@@ -302,7 +307,7 @@ class RoboDrawer:
             points_2d = simplify_points(points_2d, epsilon)
             self._logger.info(f"Path {i+1} simplified from {original_count} to {len(points_2d)} points.")
 
-            self._logger.info(f"Drawing path {i+1}/{total_paths} with {len(points_2d)} points.")
+            self._logger.info(f"Planning path {i+1}/{total_paths} with {len(points_2d)} points.")
 
             p0 = points_2d[0]
             self._logger.debug(f"Starting point of path: {p0}")
@@ -324,13 +329,15 @@ class RoboDrawer:
                 # Execute pending retract from previous path if we are not continuous
                 if pending_retract_pose is not None:
                     self._logger.info(f"Retracting after completing previous path.")
-                    last_joints = self._move_j_ik(pending_retract_pose, last_joints)
+                    last_joints = self._solve_ik(pending_retract_pose, last_joints, frame_pose)
+                    execution_queue.append(("MOVE", last_joints))
                     self._logger.info(f"Retracted.")
                     pending_retract_pose = None
 
                 try:
                     self._logger.info(f"Moving to approach pose for path {i+1}.")
-                    last_joints = self._move_j_ik(approach_pose, last_joints)
+                    last_joints = self._solve_ik(approach_pose, last_joints, frame_pose)
+                    execution_queue.append(("MOVE", last_joints))
                     self._logger.info(f"Moved to approach pose for path {i+1}.")
                 except Exception as e:
                     self._logger.exception(f"Robot cannot reach start of path {i+1}. Exception: {e}")
@@ -340,7 +347,8 @@ class RoboDrawer:
                 self._logger.debug("Path is continuous with previous one. Skipping retract/approach.")
 
             self._logger.info(f"Moving down to target pose for path {i+1}.")
-            last_joints = self._move_j_ik(target_pose, last_joints)
+            last_joints = self._solve_ik(target_pose, last_joints, frame_pose)
+            execution_queue.append(("MOVE", last_joints))
             self._logger.info(f"Moved down to target pose for path {i+1}.")
 
             self._logger.info(f"Tracing the curve for path {i+1}.")
@@ -350,23 +358,36 @@ class RoboDrawer:
                 self._logger.debug(f"Calculated target pose for point: {target_pose}")
 
                 self._logger.info(f"Moving to point at X={p.x}, Y={p.y}.")
-                last_joints = self._move_j_ik(target_pose, last_joints)
+                last_joints = self._solve_ik(target_pose, last_joints, frame_pose)
+                execution_queue.append(("MOVE", last_joints))
                 self._logger.info(f"Moved to point at X={p.x}, Y={p.y}.")
 
                 if draw_options.use_visual_simulation:
-                    assert self._board is not None and self._pixel is not None
-
-                    self._board.AddGeometry(self._pixel, target_pose)
-                    self._logger.debug("Added pixel geometry to board for visual simulation.")
+                    execution_queue.append(("DRAW", target_pose))
 
             last_end_point = points_2d[-1]
             end_pose = robomath.transl(last_end_point.x * draw_options.scale, last_end_point.y * draw_options.scale, 0) * orient_tool
             pending_retract_pose = end_pose * robomath.transl(0, 0, draw_options.approach_dist)
 
-        self._logger.info("All paths drawn. Retracting drawing tool.")
+        self._logger.info("All paths planned. Retracting drawing tool.")
         if pending_retract_pose is not None:
-            last_joints = self._move_j_ik(pending_retract_pose, last_joints)
+            last_joints = self._solve_ik(pending_retract_pose, last_joints, frame_pose)
+            execution_queue.append(("MOVE", last_joints))
         self._logger.info("Drawing tool retracted.")
+        
+        self._logger.info(f"Planning completed. {len(execution_queue)} actions queued.")
+        self._logger.info("Executing movements...")
+        
+        # self._RDK.Render(False) # Optional: Disable rendering for faster execution if needed
+        
+        for action, data in tqdm(execution_queue, desc="Executing"):
+            if action == "MOVE":
+                self._robot.MoveJ(data)
+            elif action == "DRAW":
+                if self._board and self._pixel:
+                    self._board.AddGeometry(self._pixel, data)
+        
+        # self._RDK.Render(True)
 
         self._logger.info("Returning robot to home position.")
         self._go_home()
@@ -374,22 +395,19 @@ class RoboDrawer:
 
         self._logger.info("SVG drawing routine completed.")
 
-    def _move_j_ik(self, pose, last_joints: list[float]) -> list[float]:
+    def _solve_ik(self, pose, last_joints: list[float], frame_pose) -> list[float]:
         """
-        Moves the robot to the specified pose using Joint movement,
-        calculating the inverse kinematics with the previous joints as approximation.
+        Calculates the inverse kinematics for the specified pose using the previous joints as approximation.
         Returns the new joints.
         """
-        ik_result = self._robot.SolveIK(pose, joints_approx=last_joints, reference=self._frame.Pose())
+        ik_result = self._robot.SolveIK(pose, joints_approx=last_joints, reference=frame_pose)
         joints = ik_result.list()
         
         if len(joints) > 0:
-            self._robot.MoveJ(joints)
             return joints
         else:
-            self._logger.warning("SolveIK failed to find a solution. Attempting MoveJ with pose directly.")
-            self._robot.MoveJ(pose)
-            return self._robot.Joints().list()
+            self._logger.warning("SolveIK failed to find a solution during planning. Using last known joints.")
+            return last_joints
 
     def _go_home(self) -> None:
         self._logger.debug(f"Default home position: {self._robot.JointsHome()}")
