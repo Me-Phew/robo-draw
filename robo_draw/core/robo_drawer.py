@@ -1,6 +1,7 @@
 import svgpathtools
 from mephew_python_commons import LoggerFactory
 from robodk import robolink, robomath
+from tqdm import tqdm
 
 from .draw_options import DrawOptions
 from .settings import RoboDrawerSettings
@@ -239,7 +240,7 @@ class RoboDrawer:
         last_end_point = None
         pending_retract_pose = None
 
-        for i, (path, attr) in enumerate(zip(paths, attributes)):
+        for i, (path, attr) in enumerate(zip(tqdm(paths), attributes)):
             points_2d = get_points_from_path(path, step_mm=draw_options.resolution / draw_options.scale)
 
             if not points_2d:
