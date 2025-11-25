@@ -6,8 +6,11 @@ from mephew_python_commons import LoggerFactory
 
 from . import DrawOptions, RoboDrawer, RoboDrawerSettings
 
+app = typer.Typer(help="RoboDraw - SVG drawing application for robots")
 
-def main(
+
+@app.command()
+def draw(
     svg_path: Path = typer.Option(..., help="Path to the SVG file to draw"),
     run_on_robot: bool = typer.Option(False, help="Whether to run the drawing on the robot"),
     force_robot: bool = typer.Option(False, help="Whether to force runnning on the robot"),
@@ -23,6 +26,7 @@ def main(
     scale: float = typer.Option(1.0, help="Scaling factor for the drawing"),
     resolution: float = typer.Option(1.0, help="Resolution in mm per point"),
 ):
+    """Draw an SVG file using the robot."""
     settings: RoboDrawerSettings = RoboDrawerSettings(_env_file=".env", _env_file_encoding="utf-8")
 
     logger = LoggerFactory(log_files_prefix="RoboDraw").get_logger(__name__, level=settings.LOG_LEVEL)
@@ -52,10 +56,26 @@ def main(
     return drawer.draw(draw_options)
 
 
+@app.command()
+def serve(
+    host: str = typer.Option("0.0.0.0", help="Host address to bind to"),
+    port: int = typer.Option(8000, help="Port to listen on"),
+):
+    """Start the API server to receive SVG files remotely."""
+    from .api import run_server
+
+    print(f"Starting RoboDraw API server on {host}:{port}")
+    print(f"Documentation available at http://{host}:{port}/docs")
+    run_server(host=host, port=port)
+
+
+def main():
+    app()
+
+
 if __name__ == "__main__":
     try:
-        sys.exit(typer.run(main))
+        sys.exit(main())
     except SystemExit:
         print("Program exited.")
-
         sys.exit(0)
