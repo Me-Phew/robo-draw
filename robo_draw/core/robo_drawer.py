@@ -148,9 +148,45 @@ class RoboDrawer:
 
         paths, attributes, *rest = svgpathtools.svg2paths(svg_path)
 
-        self._logger.info(f"Loaded {len(paths)} paths from SVG.")
+        # Split discontinuous paths (e.g. paths with 'M' commands inside)
+        split_paths = []
+        split_attributes = []
 
-        return paths, attributes, rest
+        for path, attr in zip(paths, attributes):
+            subpaths = self._split_discontinuous_path(path)
+            for subpath in subpaths:
+                split_paths.append(subpath)
+                split_attributes.append(attr)
+
+        self._logger.info(f"Loaded {len(paths)} paths from SVG (split into {len(split_paths)} continuous segments).")
+
+        return split_paths, split_attributes, rest
+
+    def _split_discontinuous_path(self, path: svgpathtools.Path) -> list[svgpathtools.Path]:
+        """
+        Splits a path into multiple paths if there are discontinuities (gaps).
+        svgpathtools stores discontinuous subpaths in a single Path object.
+        """
+        if not path:
+            return []
+
+        subpaths = []
+        current_subpath = svgpathtools.Path()
+        current_subpath.append(path[0])
+
+        for i in range(1, len(path)):
+            prev_seg = path[i - 1]
+            curr_seg = path[i]
+
+            # Check if the end of the previous segment matches the start of the current one
+            if abs(prev_seg.end - curr_seg.start) > 1e-5:
+                subpaths.append(current_subpath)
+                current_subpath = svgpathtools.Path()
+
+            current_subpath.append(curr_seg)
+
+        subpaths.append(current_subpath)
+        return subpaths
 
     def _optimize_path_order(
         self, paths: list[svgpathtools.Path], attributes: list[dict[str, str]], draw_options: DrawOptions
