@@ -5,7 +5,7 @@ from tqdm import tqdm
 
 from .draw_options import DrawOptions
 from .settings import RoboDrawerSettings
-from .utils import get_points_from_path, simplify_points
+from .utils import get_points_from_path, simplify_points, Point
 
 
 class RoboDrawer:
@@ -287,100 +287,133 @@ class RoboDrawer:
             self._logger.warning("Could not get robot joints, assuming all zeros.")
             last_joints = [0.0] * 6
 
-        last_end_point = None
-        pending_retract_pose = None
-        
-        execution_queue = []
-        self._logger.info("Planning movements...")
+        # Grupowanie ścieżek w ciągłe segmenty z zaawansowanym łączeniem
+        self._logger.info("Grouping paths into continuous segments...")
+        path_segments = self._group_continuous_paths_advanced(paths, attributes, draw_options)
+        self._logger.info(f"Created {len(path_segments)} continuous segments from {total_paths} paths.")
 
-        for i, (path, attr) in enumerate(zip(tqdm(paths, desc="Planning"), attributes)):
-            points_2d = get_points_from_path(path, step_mm=draw_options.resolution / draw_options.scale)
+        execution_queue = []
+        self._logger.info("Planning all movements in advance...")
+
+        # Przetwarzanie każdego segmentu ciągłego
+        for segment_idx, segment in enumerate(path_segments):
+            self._logger.info(f"Processing segment {segment_idx+1}/{len(path_segments)} with {len(segment['points'])} points")
+            
+            points_2d = segment['points']
+            segment_type = segment['type']  # 'draw', 'travel', 'continuous'
 
             if not points_2d:
-                self._logger.warning(f"Path {i+1} has no points after discretization; skipping.")
                 continue
 
-            # Optimization: Simplify path using Ramer-Douglas-Peucker algorithm
-            original_count = len(points_2d)
-            # 0.1mm tolerance converted to SVG units
-            epsilon = 0.5 / draw_options.scale
-            points_2d = simplify_points(points_2d, epsilon)
-            self._logger.info(f"Path {i+1} simplified from {original_count} to {len(points_2d)} points.")
+            self._logger.info(f"Segment {segment_idx+1} has {len(points_2d)} points, type: {segment_type}")
 
-            self._logger.info(f"Planning path {i+1}/{total_paths} with {len(points_2d)} points.")
-
-            p0 = points_2d[0]
-            self._logger.debug(f"Starting point of path: {p0}")
-
-            # Check continuity with previous path
-            is_continuous = False
-            if last_end_point is not None:
-                dist = ((p0.x - last_end_point.x) ** 2 + (p0.y - last_end_point.y) ** 2) ** 0.5
-                if dist < 1.0:  # 1mm tolerance for continuity
-                    is_continuous = True
-
-            target_pose = robomath.transl(p0.x * draw_options.scale, p0.y * draw_options.scale, 0) * orient_tool
-            self._logger.debug(f"Calculated target pose: {target_pose}")
-
-            approach_pose = target_pose * robomath.transl(0, 0, draw_options.approach_dist)
-            self._logger.debug(f"Calculated approach pose: {approach_pose}")
-
-            if not is_continuous:
-                # Execute pending retract from previous path if we are not continuous
-                if pending_retract_pose is not None:
-                    self._logger.info(f"Retracting after completing previous path.")
-                    last_joints = self._solve_ik(pending_retract_pose, last_joints, frame_pose)
-                    execution_queue.append(("MOVE", last_joints))
-                    self._logger.info(f"Retracted.")
-                    pending_retract_pose = None
-
-                try:
-                    self._logger.info(f"Moving to approach pose for path {i+1}.")
-                    last_joints = self._solve_ik(approach_pose, last_joints, frame_pose)
-                    execution_queue.append(("MOVE", last_joints))
-                    self._logger.info(f"Moved to approach pose for path {i+1}.")
-                except Exception as e:
-                    self._logger.exception(f"Robot cannot reach start of path {i+1}. Exception: {e}")
-                    self._logger.error("Ensure 'Frame draw' is within reach (approx X=300mm, Y=0mm).")
-                    raise
+            if segment_type == 'travel':
+                # Segment przemieszczenia - podnieś pisak i przemieszczaj się
+                self._logger.info(f"Travel segment {segment_idx+1} - moving without drawing")
+                
+                # Przejdź do pierwszego punktu z podniesionym pisakiem
+                p0 = points_2d[0]
+                target_pose = robomath.transl(p0.x * draw_options.scale, p0.y * draw_options.scale, 0) * orient_tool
+                approach_pose = target_pose * robomath.transl(0, 0, draw_options.approach_dist)
+                
+                last_joints = self._solve_ik(approach_pose, last_joints, frame_pose)
+                execution_queue.append(("MOVE", approach_pose, last_joints))
+                
+                # Przejdź przez pozostałe punkty z podniesionym pisakiem
+                for p in points_2d[1:]:
+                    travel_pose = robomath.transl(p.x * draw_options.scale, p.y * draw_options.scale, 0) * orient_tool
+                    travel_approach_pose = travel_pose * robomath.transl(0, 0, draw_options.approach_dist)
+                    last_joints = self._solve_ik(travel_approach_pose, last_joints, frame_pose)
+                    execution_queue.append(("MOVE", travel_approach_pose, last_joints))
+                    
             else:
-                self._logger.debug("Path is continuous with previous one. Skipping retract/approach.")
+                # Segment rysowania - pisak na kartce
+                p0 = points_2d[0]
+                self._logger.debug(f"Starting point of segment: {p0}")
 
-            self._logger.info(f"Moving down to target pose for path {i+1}.")
-            last_joints = self._solve_ik(target_pose, last_joints, frame_pose)
-            execution_queue.append(("MOVE", last_joints))
-            self._logger.info(f"Moved down to target pose for path {i+1}.")
+                target_pose = robomath.transl(p0.x * draw_options.scale, p0.y * draw_options.scale, 0) * orient_tool
+                self._logger.debug(f"Calculated target pose: {target_pose}")
 
-            self._logger.info(f"Tracing the curve for path {i+1}.")
-            for p in points_2d[1:]:
-                self._logger.debug(f"Drawing point: {p}")
-                target_pose = robomath.transl(p.x * draw_options.scale, p.y * draw_options.scale, 0) * orient_tool
-                self._logger.debug(f"Calculated target pose for point: {target_pose}")
+                approach_pose = target_pose * robomath.transl(0, 0, draw_options.approach_dist)
+                self._logger.debug(f"Calculated approach pose: {approach_pose}")
 
-                self._logger.info(f"Moving to point at X={p.x}, Y={p.y}.")
-                last_joints = self._solve_ik(target_pose, last_joints, frame_pose)
-                execution_queue.append(("MOVE", last_joints))
-                self._logger.info(f"Moved to point at X={p.x}, Y={p.y}.")
+                if segment_type == 'draw':
+                    # Nowy segment rysowania - wykonaj podejście i zejście
+                    try:
+                        self._logger.info(f"Moving to approach pose for drawing segment {segment_idx+1}.")
+                        last_joints = self._solve_ik(approach_pose, last_joints, frame_pose)
+                        execution_queue.append(("MOVE", approach_pose, last_joints))
+                        self._logger.info(f"Moved to approach pose for segment {segment_idx+1}.")
+                    except Exception as e:
+                        self._logger.exception(f"Robot cannot reach start of segment {segment_idx+1}. Exception: {e}")
+                        self._logger.error("Ensure 'Frame draw' is within reach (approx X=300mm, Y=0mm).")
+                        raise
 
-                if draw_options.use_visual_simulation:
-                    execution_queue.append(("DRAW", target_pose))
+                    self._logger.info(f"Moving down to target pose for drawing segment {segment_idx+1}.")
+                    last_joints = self._solve_ik(target_pose, last_joints, frame_pose)
+                    execution_queue.append(("MOVE", target_pose, last_joints))
+                    self._logger.info(f"Moved down to target pose for segment {segment_idx+1}.")
+                    
+                elif segment_type == 'continuous':
+                    # Kontynuacja poprzedniego segmentu - przejdź bezpośrednio do pierwszego punktu
+                    self._logger.info(f"Continuing to next point in continuous segment.")
+                    last_joints = self._solve_ik(target_pose, last_joints, frame_pose)
+                    execution_queue.append(("MOVE", target_pose, last_joints))
+                    self._logger.info(f"Continued to next point.")
 
-            last_end_point = points_2d[-1]
-            end_pose = robomath.transl(last_end_point.x * draw_options.scale, last_end_point.y * draw_options.scale, 0) * orient_tool
-            pending_retract_pose = end_pose * robomath.transl(0, 0, draw_options.approach_dist)
+                # Śledź krzywą dla segmentu rysowania
+                self._logger.info(f"Tracing the curve for segment {segment_idx+1}.")
+                for p in points_2d[1:]:
+                    self._logger.debug(f"Drawing point: {p}")
+                    target_pose = robomath.transl(p.x * draw_options.scale, p.y * draw_options.scale, 0) * orient_tool
+                    self._logger.debug(f"Calculated target pose for point: {target_pose}")
 
-        self._logger.info("All paths planned. Retracting drawing tool.")
-        if pending_retract_pose is not None:
-            last_joints = self._solve_ik(pending_retract_pose, last_joints, frame_pose)
-            execution_queue.append(("MOVE", last_joints))
-        self._logger.info("Drawing tool retracted.")
-        
+                    self._logger.info(f"Moving to point at X={p.x}, Y={p.y}.")
+                    last_joints = self._solve_ik(target_pose, last_joints, frame_pose)
+                    execution_queue.append(("MOVE", target_pose, last_joints))
+                    self._logger.info(f"Moved to point at X={p.x}, Y={p.y}.")
+
+                    if draw_options.use_visual_simulation:
+                        execution_queue.append(("DRAW", target_pose, None))
+
+                # Podnieś pisak tylko jeśli następny segment nie jest ciągły
+                if segment_idx < len(path_segments) - 1:
+                    next_segment = path_segments[segment_idx + 1]
+                    if next_segment['type'] != 'continuous':
+                        # Podnieś pisak na koniec segmentu
+                        last_point = points_2d[-1]
+                        end_pose = robomath.transl(last_point.x * draw_options.scale, last_point.y * draw_options.scale, 0) * orient_tool
+                        retract_pose = end_pose * robomath.transl(0, 0, draw_options.approach_dist)
+                        
+                        self._logger.info("Retracting drawing tool after segment.")
+                        last_joints = self._solve_ik(retract_pose, last_joints, frame_pose)
+                        execution_queue.append(("MOVE", retract_pose, last_joints))
+                        self._logger.info("Drawing tool retracted.")
+                else:
+                    # Ostatni segment - podnieś pisak
+                    last_point = points_2d[-1]
+                    end_pose = robomath.transl(last_point.x * draw_options.scale, last_point.y * draw_options.scale, 0) * orient_tool
+                    retract_pose = end_pose * robomath.transl(0, 0, draw_options.approach_dist)
+                    
+                    self._logger.info("Retracting drawing tool after final segment.")
+                    last_joints = self._solve_ik(retract_pose, last_joints, frame_pose)
+                    execution_queue.append(("MOVE", retract_pose, last_joints))
+                    self._logger.info("Drawing tool retracted.")
+
         self._logger.info(f"Planning completed. {len(execution_queue)} actions queued.")
-        self._logger.info("Executing movements...")
         
-        # self._RDK.Render(False) # Optional: Disable rendering for faster execution if needed
+        # Precompute all joint positions for the entire execution queue
+        self._logger.info("Precomputing all joint positions...")
+        precomputed_joints_queue = self._precompute_all_joints(execution_queue, frame_pose)
+        self._logger.info(f"Precomputed {len(precomputed_joints_queue)} joint positions.")
         
-        for action, data in tqdm(execution_queue, desc="Executing"):
+        self._logger.info("Executing precomputed movements...")
+        
+        # Optional: Disable rendering for faster execution if needed
+        # self._RDK.Render(False)
+        
+        # Execute all precomputed movements
+        for action, data in tqdm(precomputed_joints_queue, desc="Executing"):
             if action == "MOVE":
                 self._robot.MoveJ(data)
             elif action == "DRAW":
@@ -394,6 +427,247 @@ class RoboDrawer:
         self._logger.info("Robot returned to home position.")
 
         self._logger.info("SVG drawing routine completed.")
+
+    def _group_continuous_paths_advanced(self, paths: list[svgpathtools.Path], attributes: list[dict[str, str]], draw_options: DrawOptions) -> list:
+        """
+        Zaawansowane grupowanie ścieżek w ciągłe segmenty.
+        Optymalizuje kolejność ścieżek aby maksymalizować ciągłość rysowania.
+        """
+        if not paths:
+            return []
+
+        # Konwertuj wszystkie ścieżki na punkty
+        path_points = []
+        for i, (path, attr) in enumerate(zip(paths, attributes)):
+            points_2d = get_points_from_path(path, step_mm=draw_options.resolution / draw_options.scale)
+            if points_2d:
+                # Simplify points
+                epsilon = 0.5 / draw_options.scale
+                points_2d = simplify_points(points_2d, epsilon)
+                path_points.append({
+                    'points': points_2d,
+                    'start': points_2d[0],
+                    'end': points_2d[-1],
+                    'original_index': i,
+                    'attribute': attr
+                })
+
+        if not path_points:
+            return []
+
+        # Zbuduj graf połączeń - krawędź z i->j jeśli koniec i jest blisko początku j
+        tolerance = 3.0  # mm - tolerancja snapowania
+
+        def euclid(a: Point, b: Point) -> float:
+            return ((a.x - b.x) ** 2 + (a.y - b.y) ** 2) ** 0.5
+
+        adjacency = {i: [] for i in range(len(path_points))}
+        scale = draw_options.scale
+
+        for i in range(len(path_points)):
+            for j in range(len(path_points)):
+                if i == j:
+                    continue
+                d = euclid(path_points[i]['end'], path_points[j]['start']) * scale
+                if d <= tolerance:
+                    adjacency[i].append(j)
+
+        # Greedy budowa łańcuchów (chain) korzystając z grafu
+        visited = set()
+        chains = []
+
+        def build_chain(start_idx):
+            chain = [start_idx]
+            cur = start_idx
+            while True:
+                visited.add(cur)
+                nbrs = [n for n in adjacency.get(cur, []) if n not in visited]
+                if not nbrs:
+                    break
+                # wybierz najbliższe dalej (możesz tu dać heurystykę)
+                next_idx = nbrs[0]
+                chain.append(next_idx)
+                cur = next_idx
+            return chain
+
+        for i in range(len(path_points)):
+            if i in visited:
+                continue
+            chains.append(build_chain(i))
+
+        # Konwersja chain -> segmenty punktów
+        segments = []
+        for chain in chains:
+            pts_total = []
+            for k, idx in enumerate(chain):
+                p = path_points[idx]['points']
+                if k > 0 and pts_total:
+                    # jeśli pierwszy punkt pokrywa się z ostatnim - usuń duplikat
+                    if euclid(pts_total[-1], p[0]) * scale <= tolerance:
+                        p = p[1:]
+                pts_total.extend(p)
+            if pts_total:
+                segments.append({'points': pts_total, 'type': 'draw'})
+
+        # Dodaj segmenty przemieszczenia pomiędzy nieciągłymi segmentami
+        final_segments = []
+        if not segments:
+            return final_segments
+
+        final_segments.append(segments[0])
+        for i in range(1, len(segments)):
+            prev_end = final_segments[-1]['points'][-1]
+            curr_start = segments[i]['points'][0]
+            dist = euclid(prev_end, curr_start) * scale
+            travel_tolerance = 2.0
+            if dist <= travel_tolerance:
+                # połącz jako ciągły
+                segments[i]['type'] = 'continuous'
+                final_segments.append(segments[i])
+            else:
+                # dodaj travel
+                final_segments.append({'points': [prev_end, curr_start], 'type': 'travel'})
+                final_segments.append(segments[i])
+
+        self._logger.info(f"Grouped {len(paths)} paths into {len(final_segments)} segments")
+        total_points = sum(len(segment['points']) for segment in final_segments)
+        self._logger.info(f"Total points in all segments: {total_points}")
+
+        return final_segments
+
+    def _find_optimal_path_order(self, path_points: list, draw_options: DrawOptions) -> list:
+        """
+        Znajduje optymalną kolejność ścieżek używając algorytmu najbliższego sąsiada
+        z uwzględnieniem możliwości odwracania ścieżek.
+        """
+        if not path_points:
+            return []
+
+        remaining = path_points.copy()
+        ordered = []
+        
+        # Rozpocznij od ścieżki najbliższej do punktu startowego (domyślnie (0,0))
+        start_point = Point(0, 0)
+        current_point = start_point
+        
+        while remaining:
+            best_path = None
+            best_distance = float('inf')
+            should_reverse = False
+            
+            for path in remaining:
+                # Sprawdź odległość do początku ścieżki
+                dist_start = self._calculate_distance(current_point, path['start'])
+                if dist_start < best_distance:
+                    best_distance = dist_start
+                    best_path = path
+                    should_reverse = False
+                
+                # Sprawdź odległość do końca ścieżki (odwrócona ścieżka)
+                dist_end = self._calculate_distance(current_point, path['end'])
+                if dist_end < best_distance:
+                    best_distance = dist_end
+                    best_path = path
+                    should_reverse = True
+            
+            if best_path:
+                remaining.remove(best_path)
+                
+                if should_reverse:
+                    # Odwróć ścieżkę
+                    best_path['points'] = list(reversed(best_path['points']))
+                    best_path['start'], best_path['end'] = best_path['end'], best_path['start']
+                
+                ordered.append(best_path)
+                current_point = best_path['end']
+            else:
+                break
+        
+        return ordered
+
+    def _calculate_distance(self, p1: Point, p2: Point) -> float:
+        """Oblicza odległość euklidesową między dwoma punktami."""
+        return ((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2) ** 0.5
+
+    def _add_travel_segments(self, segments: list, draw_options: DrawOptions) -> list:
+        """
+        Dodaje segmenty przemieszczenia między nieciągłymi segmentami rysowania.
+        """
+        if len(segments) <= 1:
+            return segments
+
+        final_segments = []
+        
+        # Pierwszy segment zawsze jest segmentem rysowania
+        final_segments.append(segments[0])
+        
+        for i in range(1, len(segments)):
+            prev_segment = segments[i-1]
+            curr_segment = segments[i]
+            
+            prev_end = prev_segment['points'][-1]
+            curr_start = curr_segment['points'][0]
+            
+            # Sprawdź czy segmenty są ciągłe
+            dist = self._calculate_distance(prev_end, curr_start) * draw_options.scale
+            tolerance = 2.0  # Tolerancja dla ciągłości
+            
+            if dist <= tolerance:
+                # Segmenty są ciągłe - oznacz jako ciągły
+                curr_segment['type'] = 'continuous'
+                final_segments.append(curr_segment)
+            else:
+                # Dodaj segment przemieszczenia
+                travel_points = [prev_end, curr_start]
+                final_segments.append({
+                    'points': travel_points,
+                    'type': 'travel'
+                })
+                final_segments.append(curr_segment)
+        
+        return final_segments
+
+    def _precompute_all_joints(self, execution_queue, frame_pose) -> list:
+        """
+        Precomputes all joint positions for the entire execution queue in advance.
+        This eliminates IK solving delays during execution.
+        """
+        precomputed_queue = []
+        last_joints = None
+        
+        for i, (action, pose, joints) in enumerate(tqdm(execution_queue, desc="Precomputing joints")):
+            if action == "MOVE":
+                if last_joints is None:
+                    # For the first movement, use current robot joints
+                    try:
+                        last_joints = self._robot.Joints().list()
+                    except Exception:
+                        self._logger.warning("Could not get robot joints, assuming all zeros.")
+                        last_joints = [0.0] * 6
+                
+                # Use SolveIK to compute the joint positions
+                computed_joints = self._solve_ik_for_precomputation(pose, last_joints, frame_pose)
+                precomputed_queue.append(("MOVE", computed_joints))
+                last_joints = computed_joints
+            elif action == "DRAW":
+                # For DRAW actions, just pass the pose data through
+                precomputed_queue.append(("DRAW", pose))
+        
+        return precomputed_queue
+
+    def _solve_ik_for_precomputation(self, pose, last_joints: list[float], frame_pose) -> list[float]:
+        """
+        Calculates the inverse kinematics for the specified pose using the previous joints as approximation.
+        This version is optimized for precomputation.
+        """
+        ik_result = self._robot.SolveIK(pose, joints_approx=last_joints, reference=frame_pose)
+        joints = ik_result.list()
+        
+        if len(joints) > 0:
+            return joints
+        else:
+            self._logger.warning("SolveIK failed to find a solution during precomputation. Using last known joints.")
+            return last_joints
 
     def _solve_ik(self, pose, last_joints: list[float], frame_pose) -> list[float]:
         """
