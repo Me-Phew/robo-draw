@@ -70,3 +70,38 @@ def simplify_points(points: list[Point], epsilon: float) -> list[Point]:
         return rec_results1[:-1] + rec_results2
     else:
         return [points[0], points[end]]
+
+
+def is_bezier_arc(curve, tolerance: float = 0.05) -> bool:
+    """
+    Sprawdza, czy segment Béziera (Quadratic/Cubic) zachowuje się jak fragment okręgu.
+    Metoda porównuje zmienność krzywizny w kilku punktach; jeśli względna różnica
+    (kmax - kmin) / kmax jest mniejsza niż tolerance => traktujemy jako łuk.
+    """
+    if not isinstance(curve, (svgpathtools.CubicBezier, svgpathtools.QuadraticBezier)):
+        return False
+
+    ts = (0.0, 0.25, 0.5, 0.75, 1.0)
+    curvatures = []
+
+    for t in ts:
+        # derivative() i second_derivative() zwracają liczbę zespoloną reprezentującą wektor pochodnych
+        try:
+            d1 = curve.derivative(t)
+            d2 = curve.second_derivative(t)
+        except Exception:
+            # jeśli segment nie udostępnia tych metod, uznajemy, że nie jest łukiem
+            return False
+
+        dx, dy = d1.real, d1.imag
+        ddx, ddy = d2.real, d2.imag
+
+        denom = max((dx * dx + dy * dy) ** 1.5, 1e-9)
+        k = abs(dx * ddy - dy * ddx) / denom
+        curvatures.append(k)
+
+    kmin, kmax = min(curvatures), max(curvatures)
+    if kmax <= 1e-12:
+        return False
+
+    return (kmax - kmin) / kmax < tolerance
