@@ -12,6 +12,7 @@ dependencies = [
     "svgpathtools>=1.7.1",
     "typer>=0.20.0",
     "mephew-python-commons",
+    "tqdm>=4.67.1",
 ]
 
 [tool.uv.sources]
