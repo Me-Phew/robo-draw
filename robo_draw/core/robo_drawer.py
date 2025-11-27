@@ -57,19 +57,45 @@ class RoboDrawer:
 
         self._logger.info("Connecting to robot...")
 
-        success = self._robot.Connect()
-
-        if not success:
-            self._logger.error("Robot connection attempt failed.")
+        # Try connecting with retries to handle transient communication issues
+        attempts = 3
+        success = False
+        for attempt in range(1, attempts + 1):
+            self._logger.debug(f"Attempt {attempt}/{attempts} to connect to robot...")
+            success = self._robot.Connect()
+            if success:
+                self._logger.info(f"Robot connection attempt succeeded on attempt {attempt}.")
+                break
+            else:
+                self._logger.warning(f"Robot connection attempt {attempt} failed.")
+                if attempt < attempts:
+                    import time
+                    time.sleep(1.5 * attempt)
 
         status, status_msg = self._robot.ConnectedState()
 
+        # Handle known non-fatal controller message "Unknown SETROUNDING"
         if status != robolink.ROBOTCOM_READY:
-            self._logger.error(f"Robot connection failed: {status_msg}")
-            raise ConnectionError(f"Failed to connect to robot: {status_msg}")
+            msg = str(status_msg)
+            if "Unknown SETROUNDING" in msg:
+                # Allow proceeding only when explicitly forced by user
+                if force_robot:
+                    self._logger.warning(
+                        f"Non-fatal connection warning from robot controller: {msg}. "
+                        "Proceeding because force_robot=True."
+                    )
+                else:
+                    self._logger.error(
+                        f"Robot connection returned warning: {msg}. "
+                        "Use --force-robot to proceed if you understand the risk, "
+                        "or check/update your RoboDK/robot plugin."
+                    )
+                    raise ConnectionError(f"Failed to connect to robot: {msg}. Use --force-robot to override if safe.")
+            else:
+                self._logger.error(f"Robot connection failed: {msg}")
+                raise ConnectionError(f"Failed to connect to robot: {msg}")
 
         self._logger.info("Robot connected successfully.")
-
         self._RDK.setRunMode(robolink.RUNMODE_RUN_ROBOT)
         self._logger.info("Set RoboDK to run on robot mode.")
 
@@ -383,9 +409,6 @@ class RoboDrawer:
         
         # Enable rendering again
         self._RDK.Render(True)
-        
-        # Set rounding to avoid stopping at each point (smooth movement)
-        self._robot.setRounding(2.0)
         
         for action, data in tqdm(execution_queue, desc="Executing"):
             if action == "MOVE":
