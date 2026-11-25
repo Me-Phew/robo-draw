@@ -181,10 +181,22 @@ class RoboDrawer:
         self._logger.info(f"Starting drawing process for SVG: {draw_options.svg_path}")
 
         paths, _, _ = self._load_svg(str(draw_options.svg_path))
+        self._draw_paths(paths, draw_options)
+
+    def draw_paths(self, paths, draw_options: DrawOptions) -> None:
+        """Rysuje gotowe ścieżki. Przy fit_to_sheet=False współrzędne są milimetrami układu kartki."""
+        self._init_drawing_items(draw_options)
+        self._draw_paths(paths, draw_options)
+
+    def _prepare_paths(self, paths, draw_options: DrawOptions):
         scale = draw_options.scale
         margin = 0.0
         y_sign = 1.0
-        if draw_options.sheet_width_mm is not None and draw_options.sheet_height_mm is not None:
+        if (
+            draw_options.fit_to_sheet
+            and draw_options.sheet_width_mm is not None
+            and draw_options.sheet_height_mm is not None
+        ):
             paths, scale, margin, svg_w, svg_h = fit_paths(
                 paths,
                 draw_options.sheet_width_mm,
@@ -196,7 +208,12 @@ class RoboDrawer:
                 f"Kartka {draw_options.sheet_width_mm:.1f} x {draw_options.sheet_height_mm:.1f} mm, "
                 f"rysunek {svg_w:.1f} x {svg_h:.1f}, skala {scale:.4f}."
             )
+        elif draw_options.sheet_width_mm is not None:
+            y_sign = draw_options.sheet_y_sign
+        return paths, scale, margin, y_sign
 
+    def _draw_paths(self, paths, draw_options: DrawOptions) -> None:
+        paths, scale, margin, y_sign = self._prepare_paths(paths, draw_options)
         self._logger.info("Planning motions...")
         plan = plan_drawing(paths, scale=scale, resolution=draw_options.resolution)
         counts = ", ".join(f"{kind}={count}" for kind, count in sorted(plan.counts().items()))

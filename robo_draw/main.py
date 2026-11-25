@@ -5,6 +5,7 @@ from mephew_python_commons import LoggerFactory
 
 from . import DrawOptions, RoboDrawer, RoboDrawerSettings
 from .core.sheet_setup import load_sheet, sheet_bounds
+from .core.tictactoe import play, sheet_draw_options
 
 app = typer.Typer(help="RoboDraw - SVG drawing application for robots")
 
@@ -95,6 +96,25 @@ def setup(
         print(f"Wstawiono {output} do stacji.")
         return
     drawer.teach_sheet(output, frame_item_name, tool_item_name, approach_dist)
+
+
+@app.command()
+def tictactoe(
+    setup: Path = typer.Option(..., help="JSON kartki z setup"),
+    camera: str = typer.Option("0", help="Numer kamery OpenCV albo URL obrazu. OnRobot Eyes, gdy widać je jako USB."),
+    robot_name: str = typer.Option("Hanwha HCR-3A", help="Name of the robot in RoboDK"),
+    ink: float = typer.Option(0.045, help="Próg tuszu w polu, od 0 do 1"),
+):
+    """Kółko i krzyżyk: gracz rysuje X, po Enterze kamera czyta pole, robot rysuje O."""
+    settings: RoboDrawerSettings = RoboDrawerSettings(_env_file=".env", _env_file_encoding="utf-8")
+    drawer = RoboDrawer(settings)
+    sheet = load_sheet(setup)
+    drawer.connect_robot(False, robot_name, False)
+    drawer.apply_sheet(sheet)
+    bounds = sheet_bounds(sheet)
+    if bounds is None:
+        raise typer.BadParameter(f"{setup} nie ma wymiarów kartki.")
+    play(drawer, sheet_draw_options(sheet, bounds), camera, ink)
 
 
 @app.command()

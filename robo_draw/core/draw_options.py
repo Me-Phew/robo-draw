@@ -24,3 +24,4 @@ class DrawOptions(BaseModel):
     sheet_height_mm: float | None = None
     sheet_y_sign: float = 1.0
     requested_scale: float | None = None
+    fit_to_sheet: bool = True

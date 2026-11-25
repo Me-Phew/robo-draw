@@ -253,6 +253,29 @@ Program łączy się ze sterownikiem i przełącza RoboDK na ruch robota. Gdy st
 
 `setup` nie ma trybu prawdziwego ramienia. Trzy punkty naucz w symulacji, dojeżdżając modelem do miejsc, które odpowiadają kartce, albo jogiem na żywo jeszcze przed wywołaniem programu i zatwierdzając Enter, gdy czubek już stoi. Samo `setup` wysyła do RoboDK tylko odczyt pozycji i zapis układu, nie sekwencję rysowania.
 
+## Kółko i krzyżyk z kamerą
+
+OnRobot Eyes to kamera RGB na USB-C, wpięta w Eye Box. Eye Box liczy własne detekcje przez Web Client i URCap, bez API do tej gry. Program czyta zwykły obraz przez OpenCV: numer kamery, gdy system widzi Eyes albo inną kamerę jako urządzenie USB, albo adres strumienia, gdy obraz jest wystawiony pod URL.
+
+Gra używa kartki z `setup`. Robot rysuje siatkę, ty stawiasz X, po Enterze kamera sprawdza, które pole przybyło, i robot rysuje O. Pole 1 leży przy nauczonym rogu, 2 i 3 idą wzdłuż osi X, kolejne rzędy w stronę osi Y.
+
+```bash
+uv run python -m robo_draw.main tictactoe --setup sheet.json --camera 0
+```
+
+W oknie kamery kliknij cztery rogi narysowanej planszy w tej samej kolejności co przy uczeniu kartki: róg początkowy, koniec X, róg przeciwny, koniec Y. Enter w oknie zatwierdza kliknięcia, `r` kasuje punkty.
+
+Potem w terminalu: narysuj jeden krzyżyk i naciśnij Enter. Program wypisuje, ile tuszu widzi w każdym polu. Czerwona ramka w oknie to pole uznane za zajęte. Gdy widok jest niepewny, wpisz numer pola `1`–`9` zamiast polegać na zdjęciu. `q` kończy grę.
+
+Inna kamera albo strumień:
+
+```bash
+uv run python -m robo_draw.main tictactoe --setup sheet.json --camera 1
+uv run python -m robo_draw.main tictactoe --setup sheet.json --camera http://192.168.1.50:8080/video
+```
+
+`--ink 0.045` to próg: udział ciemnych pikseli w środku pola. Jaśniejszy pisak wymaga mniejszej liczby, cień na kartce większej.
+
 ## API
 
 Serwer przyjmuje SVG z innego komputera. Nie wczytuje `sheet.json` i nie dopasowuje skali do kartki. Układ i narzędzie muszą już stać w stacji. Skala z formularza jest używana wprost, domyślnie 1.
