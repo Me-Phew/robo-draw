@@ -257,13 +257,13 @@ Program łączy się ze sterownikiem i przełącza RoboDK na ruch robota. Gdy st
 
 OnRobot Eyes to kamera RGB na USB-C, wpięta w Eye Box. Eye Box liczy własne detekcje przez Web Client i URCap, bez API do tej gry. Program czyta zwykły obraz przez OpenCV: numer kamery, gdy system widzi Eyes albo inną kamerę jako urządzenie USB, albo adres strumienia, gdy obraz jest wystawiony pod URL.
 
-Gra używa kartki z `setup`. Robot rysuje siatkę, ty stawiasz X, po Enterze kamera sprawdza, które pole przybyło, i robot rysuje O. Pole 1 leży przy nauczonym rogu, 2 i 3 idą wzdłuż osi X, kolejne rzędy w stronę osi Y.
+Gra używa kartki z `setup`. Kamera jest na ramieniu, więc obraz planszy ma sens tylko w jednej pozycji. Po narysowaniu siatki dojeżdżasz tak, żeby w kadrze była cała plansza, i zatwierdzasz Enterem. Program zapamiętuje stawy. Przed każdym odczytem wraca w to miejsce, robi zdjęcie i dopiero potem rysuje. Pole 1 leży przy nauczonym rogu, 2 i 3 idą wzdłuż osi X, kolejne rzędy w stronę osi Y.
 
 ```bash
 uv run python -m robo_draw.main tictactoe --setup sheet.json --camera 0
 ```
 
-W oknie kamery kliknij cztery rogi narysowanej planszy w tej samej kolejności co przy uczeniu kartki: róg początkowy, koniec X, róg przeciwny, koniec Y. Enter w oknie zatwierdza kliknięcia, `r` kasuje punkty.
+Przy tej pozycji kamery kliknij w oknie cztery rogi narysowanej planszy: róg początkowy, koniec X, róg przeciwny, koniec Y. Ramienia w trakcie klikania nie ruszaj. Enter w oknie zatwierdza kliknięcia, `r` kasuje punkty.
 
 Potem w terminalu: narysuj jeden krzyżyk i naciśnij Enter. Program wypisuje, ile tuszu widzi w każdym polu. Czerwona ramka w oknie to pole uznane za zajęte. Gdy widok jest niepewny, wpisz numer pola `1`–`9` zamiast polegać na zdjęciu. `q` kończy grę.
 

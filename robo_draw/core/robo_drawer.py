@@ -513,6 +513,13 @@ class RoboDrawer:
         except Exception:
             return float("inf")
 
+    def read_joints(self) -> list[float]:
+        values = [float(value) for value in self._robot.Joints().list()]
+        return values[:6]
+
+    def move_joints(self, joints: list[float]) -> None:
+        self._robot.MoveJ(joints[:6], blocking=True)
+
     def _go_home(self) -> None:
         """Przejście do pozycji domowej (bezpieczne MoveJ z obsługą wyjątków)."""
         custom_home = [0, -70, -95, -104, 90, -20]

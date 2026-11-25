@@ -139,12 +139,19 @@ def play(drawer, draw_options: DrawOptions, camera: str, ink_ratio: float) -> No
 
     capture = open_capture(camera)
     try:
+        print(
+            "Kamera jedzie z ramieniem. Ustaw robota tak, żeby w kadrze była cała plansza, "
+            "i naciśnij Enter. Przed każdym zdjęciem program wróci w te stawy."
+        )
+        input("Pozycja zdjęcia: ")
+        photo_joints = drawer.read_joints()
+        print("Nie ruszaj ramienia. Kliknij rogi planszy na obrazie z tej pozycji.")
         corners = _calibrate(capture)
         board = ["."] * 9
         print("Zaczynasz ty, znakiem X. Narysuj jeden krzyżyk i naciśnij Enter. q kończy grę, cyfra 1-9 stawia X bez kamery.")
         while outcome(board) is None:
             print(format_board(board))
-            answer = input("Twój ruch. Enter = zdjęcie z kamery: ").strip().lower()
+            answer = input("Twój ruch. Enter = zdjęcie z kamery na robocie: ").strip().lower()
             if answer == "q":
                 print("Koniec gry.")
                 return
@@ -154,6 +161,8 @@ def play(drawer, draw_options: DrawOptions, camera: str, ink_ratio: float) -> No
                     print("To pole jest zajęte.")
                     continue
             else:
+                print("Wracam kamerą nad planszę.")
+                drawer.move_joints(photo_joints)
                 frame = _grab(capture)
                 seen, ratios = occupied_cells(warp_board(frame, corners), ink_ratio)
                 _show_reading(warp_board(frame, corners), seen)
