@@ -198,11 +198,26 @@ class RoboDrawer:
 
         pen_down = False
         last_xy = None
+        fast = None
         # Dodatnie Z układu kartki jest nad papierem. Starsze -10 wjeżdżało w kartkę.
         clearance = abs(float(draw_options.approach_dist))
 
+        def pace(travel: bool) -> None:
+            nonlocal fast
+            if fast == travel:
+                return
+            fast = travel
+            if travel:
+                self._robot.setRounding(0)
+                self._robot.setSpeed(500, 180, 2500, 800)
+            else:
+                self._robot.setRounding(1.0)
+                self._robot.setSpeed(150, 90, 1000, 400)
+
         for motion in tqdm(plan.motions, desc="Drawing"):
             if motion.kind == "travel":
+                self._robot.WaitMove()
+                pace(True)
                 if pen_down and last_xy is not None:
                     self._move_linear(self._pen_pose(last_xy, clearance, scale, orient_tool))
                 self._move_linear(self._pen_pose(motion.target, clearance, scale, orient_tool))
@@ -210,25 +225,31 @@ class RoboDrawer:
                 pen_down = True
                 last_xy = motion.target
             elif motion.kind == "line":
+                pace(False)
                 pose = self._pen_pose(motion.target, 0, scale, orient_tool)
-                self._move_linear(pose)
+                self._move_linear(pose, blocking=False)
                 self._paint(pose, draw_options)
                 last_xy = motion.target
             elif motion.kind == "arc":
+                pace(False)
                 via = self._pen_pose(motion.via, 0, scale, orient_tool)
                 end = self._pen_pose(motion.target, 0, scale, orient_tool)
                 try:
-                    self._robot.MoveC(via, end, blocking=True)
+                    self._robot.MoveC(via, end, blocking=False)
                 except Exception as exc:
                     self._logger.warning(f"MoveC failed ({exc}); drawing the arc as two lines.")
-                    self._move_linear(via)
-                    self._move_linear(end)
+                    self._move_linear(via, blocking=False)
+                    self._move_linear(end, blocking=False)
                 self._paint(end, draw_options)
                 last_xy = motion.target
             elif motion.kind == "retract":
+                self._robot.WaitMove()
+                pace(True)
                 if pen_down and last_xy is not None:
                     self._move_linear(self._pen_pose(last_xy, clearance, scale, orient_tool))
                 pen_down = False
+
+        self._robot.WaitMove()
 
         self._logger.info("Returning robot to home position.")
         self._go_home()
@@ -246,8 +267,8 @@ class RoboDrawer:
             self._move_linear(pose)
         return joints
 
-    def _move_linear(self, pose) -> None:
-        self._robot.MoveL(pose, blocking=True)
+    def _move_linear(self, pose, blocking: bool = True) -> None:
+        self._robot.MoveL(pose, blocking=blocking)
 
     def _paint(self, pose, draw_options: DrawOptions) -> None:
         if draw_options.use_visual_simulation and self._board and self._pixel:
