@@ -3,7 +3,7 @@ import svgpathtools
 from mephew_python_commons import LoggerFactory
 from robodk import robolink, robomath
 
-from .sheet_setup import frame_matrix, pose_to_xyzrpw, rows_to_pose, save_sheet
+from .sheet_setup import fit_paths, frame_matrix, pose_to_xyzrpw, rows_to_pose, save_sheet, sheet_extents
 from tqdm import tqdm
 import numpy as np
 
@@ -93,15 +93,16 @@ class RoboDrawer:
         print("Aktywna końcówka to czubek pisaka. Dojazd rób tym czubkiem.")
         origin = self._teach_point("1/3  Róg kartki, początek XY. Przesuń robota i naciśnij Enter.")
         x_point = self._teach_point(
-            "2/3  Dolna krawędź, kierunek plus X. Przesuń robota i naciśnij Enter.",
+            "2/3  Koniec dolnej krawędzi, to jest szerokość kartki. Przesuń robota i naciśnij Enter.",
             (origin,),
         )
         y_point = self._teach_point(
-            "3/3  Lewa krawędź, kierunek plus Y. Przesuń robota i naciśnij Enter.",
+            "3/3  Koniec lewej krawędzi, to jest wysokość kartki. Przesuń robota i naciśnij Enter.",
             (origin, x_point),
         )
 
         rows = [[round(value, 4) for value in row] for row in frame_matrix(origin, x_point, y_point)]
+        width, height, y_sign = sheet_extents(origin, x_point, y_point)
         frame = self._ensure_frame(frame_name)
         frame.setPoseAbs(rows_to_pose(rows))
         tool_pose = self._robot.PoseTool()
@@ -121,9 +122,11 @@ class RoboDrawer:
                 "x": [round(value, 3) for value in x_point],
                 "y": [round(value, 3) for value in y_point],
             },
+            "sheet_mm": {"width": round(width, 3), "height": round(height, 3)},
+            "y_sign": y_sign,
         }
         save_sheet(output, sheet)
-        print(f"Układ {frame_name} i pisak {tool_name} zapisane w {output}")
+        print(f"Kartka {width:.1f} x {height:.1f} mm. Układ {frame_name} i pisak {tool_name} zapisane w {output}")
 
     def apply_sheet(self, sheet: dict) -> None:
         """Wstaw zapisany układ kartki i końcówkę pisaka do otwartej stacji."""
@@ -178,15 +181,30 @@ class RoboDrawer:
         self._logger.info(f"Starting drawing process for SVG: {draw_options.svg_path}")
 
         paths, _, _ = self._load_svg(str(draw_options.svg_path))
+        scale = draw_options.scale
+        margin = 0.0
+        y_sign = 1.0
+        if draw_options.sheet_width_mm is not None and draw_options.sheet_height_mm is not None:
+            paths, scale, margin, svg_w, svg_h = fit_paths(
+                paths,
+                draw_options.sheet_width_mm,
+                draw_options.sheet_height_mm,
+                draw_options.requested_scale,
+            )
+            y_sign = draw_options.sheet_y_sign
+            self._logger.info(
+                f"Kartka {draw_options.sheet_width_mm:.1f} x {draw_options.sheet_height_mm:.1f} mm, "
+                f"rysunek {svg_w:.1f} x {svg_h:.1f}, skala {scale:.4f}."
+            )
 
         self._logger.info("Planning motions...")
-        plan = plan_drawing(paths, scale=draw_options.scale, resolution=draw_options.resolution)
+        plan = plan_drawing(paths, scale=scale, resolution=draw_options.resolution)
         counts = ", ".join(f"{kind}={count}" for kind, count in sorted(plan.counts().items()))
         self._logger.info(
             f"Plan: {len(plan.strokes)} strokes ({counts}), {len(plan.motions)} motions."
         )
 
-        self._execute_plan(plan, draw_options)
+        self._execute_plan(plan, draw_options, scale, margin, y_sign)
 
         self._logger.info("Drawing process completed.")
 
@@ -277,11 +295,19 @@ class RoboDrawer:
         return subpaths
 
 
-    def _execute_plan(self, plan, draw_options: DrawOptions) -> None:
+    def _execute_plan(
+        self,
+        plan,
+        draw_options: DrawOptions,
+        scale: float | None = None,
+        margin: float = 0.0,
+        y_sign: float = 1.0,
+    ) -> None:
         """Wykonaj plan: nad kartką MoveL na stałej wysokości, na papierze MoveL albo MoveC."""
         self._robot.setPoseFrame(self._frame)
         orient_tool = robomath.rotx(180 * robomath.pi / 180)
-        scale = draw_options.scale
+        if scale is None:
+            scale = draw_options.scale
 
         self._logger.info("Moving robot to home position.")
         self._go_home()
@@ -309,21 +335,21 @@ class RoboDrawer:
                 self._robot.WaitMove()
                 pace(True)
                 if pen_down and last_xy is not None:
-                    self._move_linear(self._pen_pose(last_xy, clearance, scale, orient_tool))
-                self._move_linear(self._pen_pose(motion.target, clearance, scale, orient_tool))
-                self._move_linear(self._pen_pose(motion.target, 0, scale, orient_tool))
+                    self._move_linear(self._pen_pose(last_xy, clearance, scale, orient_tool, margin, y_sign))
+                self._move_linear(self._pen_pose(motion.target, clearance, scale, orient_tool, margin, y_sign))
+                self._move_linear(self._pen_pose(motion.target, 0, scale, orient_tool, margin, y_sign))
                 pen_down = True
                 last_xy = motion.target
             elif motion.kind == "line":
                 pace(False)
-                pose = self._pen_pose(motion.target, 0, scale, orient_tool)
+                pose = self._pen_pose(motion.target, 0, scale, orient_tool, margin, y_sign)
                 self._move_linear(pose, blocking=False)
                 self._paint(pose, draw_options)
                 last_xy = motion.target
             elif motion.kind == "arc":
                 pace(False)
-                via = self._pen_pose(motion.via, 0, scale, orient_tool)
-                end = self._pen_pose(motion.target, 0, scale, orient_tool)
+                via = self._pen_pose(motion.via, 0, scale, orient_tool, margin, y_sign)
+                end = self._pen_pose(motion.target, 0, scale, orient_tool, margin, y_sign)
                 try:
                     self._robot.MoveC(via, end, blocking=False)
                 except Exception as exc:
@@ -336,7 +362,7 @@ class RoboDrawer:
                 self._robot.WaitMove()
                 pace(True)
                 if pen_down and last_xy is not None:
-                    self._move_linear(self._pen_pose(last_xy, clearance, scale, orient_tool))
+                    self._move_linear(self._pen_pose(last_xy, clearance, scale, orient_tool, margin, y_sign))
                 pen_down = False
 
         self._robot.WaitMove()
@@ -345,8 +371,10 @@ class RoboDrawer:
         self._go_home()
         self._logger.info("SVG drawing routine completed.")
 
-    def _pen_pose(self, point: complex, z_mm: float, scale: float, orient_tool):
-        return robomath.transl(point.real * scale, point.imag * scale, z_mm) * orient_tool
+    def _pen_pose(self, point: complex, z_mm: float, scale: float, orient_tool, margin: float = 0.0, y_sign: float = 1.0):
+        x_mm = margin + point.real * scale
+        y_mm = y_sign * (margin + point.imag * scale)
+        return robomath.transl(x_mm, y_mm, z_mm) * orient_tool
 
     def _move_joints(self, pose, last_joints: list[float], frame_pose) -> list[float]:
         joints = self._solve_ik_stable(pose, last_joints, frame_pose)

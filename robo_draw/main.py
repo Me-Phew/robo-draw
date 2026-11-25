@@ -4,7 +4,7 @@ import typer
 from mephew_python_commons import LoggerFactory
 
 from . import DrawOptions, RoboDrawer, RoboDrawerSettings
-from .core.sheet_setup import load_sheet
+from .core.sheet_setup import load_sheet, sheet_bounds
 
 app = typer.Typer(help="RoboDraw - SVG drawing application for robots")
 
@@ -25,7 +25,9 @@ def draw(
     approach_dist: int = typer.Option(
         10, help="How high the pen lifts above the sheet, in mm. Positive Z of the drawing frame."
     ),
-    scale: float = typer.Option(1.0, help="Scaling factor for the drawing"),
+    scale: float | None = typer.Option(
+        None, help="Skala rysunku. Bez tej opcji i z --setup skala dopasowuje rysunek do kartki."
+    ),
     resolution: float = typer.Option(1.0, help="Resolution in mm per point"),
     setup: Path | None = typer.Option(None, help="JSON z setupu kartki i pisaka"),
 ):
@@ -42,12 +44,17 @@ def draw(
     logger.debug("Connecting to robot.")
     drawer.connect_robot(run_on_robot, robot_name, force_robot)
 
+    sheet_width = sheet_height = None
+    sheet_y_sign = 1.0
     if setup is not None:
         sheet = load_sheet(setup)
         drawer.apply_sheet(sheet)
         frame_item_name = sheet["frame_item_name"]
         tool_item_name = sheet["tool_item_name"]
         approach_dist = int(sheet["approach_dist"])
+        bounds = sheet_bounds(sheet)
+        if bounds is not None:
+            sheet_width, sheet_height, sheet_y_sign = bounds
 
     logger.debug("Preparing draw options.")
     draw_options: DrawOptions = DrawOptions(
@@ -58,8 +65,12 @@ def draw(
         pixel_item_name=pixel_item_name,
         board_item_name=board_item_name,
         approach_dist=approach_dist,
-        scale=scale,
+        scale=1.0 if scale is None else scale,
         resolution=resolution,
+        sheet_width_mm=sheet_width,
+        sheet_height_mm=sheet_height,
+        sheet_y_sign=sheet_y_sign,
+        requested_scale=scale,
     )
 
     logger.debug("Starting drawing process.")

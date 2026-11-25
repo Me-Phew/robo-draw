@@ -71,6 +71,40 @@ def test_sheet_frame_points_up():
     assert mirrored[2][2] > 0.99
 
 
+def test_sheet_size_and_fit():
+    from robo_draw.core.sheet_setup import fit_paths, sheet_bounds, sheet_extents
+
+    width, height, sign = sheet_extents((0, 0, 10), (200, 0, 10), (0, 100, 10))
+    assert abs(width - 200) < 1e-6
+    assert abs(height - 100) < 1e-6
+    assert sign == 1.0
+
+    width, height, sign = sheet_extents((0, 0, 0), (50, 0, 0), (0, -40, 0))
+    assert abs(width - 50) < 1e-6
+    assert abs(height - 40) < 1e-6
+    assert sign == -1.0
+
+    stored = sheet_bounds(
+        {"points_mm": {"origin": [0, 0, 10], "x": [200, 0, 10], "y": [0, 100, 10]}}
+    )
+    assert stored is not None
+    assert abs(stored[0] - 200) < 1e-6
+
+    drawing = svgpathtools.Path(svgpathtools.Line(10 + 20j, 110 + 70j))
+    fitted, scale, inset, svg_w, svg_h = fit_paths([drawing], 200, 100, None, margin=0)
+    assert abs(svg_w - 100) < 1e-6
+    assert abs(svg_h - 50) < 1e-6
+    assert abs(scale - 2.0) < 1e-6
+    assert inset == 0
+    assert abs(fitted[0].start) < 1e-6
+
+    _, capped, _, _, _ = fit_paths([drawing], 200, 100, 5.0, margin=0)
+    assert abs(capped - 2.0) < 1e-6
+
+    _, smaller, _, _, _ = fit_paths([drawing], 200, 100, 0.5, margin=0)
+    assert abs(smaller - 0.5) < 1e-6
+
+
 def test_straight_stroke_is_one_line():
     path = svgpathtools.Path(svgpathtools.Line(0j, 40 + 0j))
     plan = plan_drawing([path], scale=1.0)
