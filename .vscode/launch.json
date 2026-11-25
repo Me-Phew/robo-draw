@@ -11,6 +11,7 @@
       "module": "robo_draw.main",
       "console": "integratedTerminal",
       "args": [
+        "draw",
         "--svg-path",
         "${workspaceFolder}/examples/dudek.svg",
       ],

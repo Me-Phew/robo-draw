@@ -13,6 +13,9 @@ dependencies = [
     "typer>=0.20.0",
     "mephew-python-commons",
     "tqdm>=4.67.1",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.32.0",
+    "python-multipart>=0.0.17",
 ]
 
 [tool.uv.sources]
