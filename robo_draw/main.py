@@ -21,7 +21,9 @@ def draw(
     ),
     pixel_item_name: str = typer.Option("Pixel", help="Name of the pixel item for visual simulation"),
     board_item_name: str = typer.Option("Drawing Board", help="Name of the board item for visual simulation"),
-    approach_dist: int = typer.Option(-10, help="Approach distance in mm"),
+    approach_dist: int = typer.Option(
+        10, help="How high the pen lifts above the sheet, in mm. Positive Z of the drawing frame."
+    ),
     scale: float = typer.Option(1.0, help="Scaling factor for the drawing"),
     resolution: float = typer.Option(1.0, help="Resolution in mm per point"),
 ):

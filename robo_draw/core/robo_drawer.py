@@ -188,37 +188,24 @@ class RoboDrawer:
 
 
     def _execute_plan(self, plan, draw_options: DrawOptions) -> None:
-        """Wykonaj plan: w powietrzu MoveJ, na kartce MoveL albo MoveC."""
+        """Wykonaj plan: nad kartką MoveL na stałej wysokości, na papierze MoveL albo MoveC."""
         self._robot.setPoseFrame(self._frame)
         orient_tool = robomath.rotx(180 * robomath.pi / 180)
-        frame_pose = self._frame.Pose()
         scale = draw_options.scale
 
         self._logger.info("Moving robot to home position.")
         self._go_home()
 
-        try:
-            last_joints = self._robot.Joints().list()
-        except Exception:
-            self._logger.warning("Could not get robot joints, assuming all zeros.")
-            last_joints = [0.0] * 6
-
         pen_down = False
         last_xy = None
+        # Dodatnie Z układu kartki jest nad papierem. Starsze -10 wjeżdżało w kartkę.
+        clearance = abs(float(draw_options.approach_dist))
 
         for motion in tqdm(plan.motions, desc="Drawing"):
             if motion.kind == "travel":
                 if pen_down and last_xy is not None:
-                    last_joints = self._move_joints(
-                        self._pen_pose(last_xy, draw_options.approach_dist, scale, orient_tool),
-                        last_joints,
-                        frame_pose,
-                    )
-                last_joints = self._move_joints(
-                    self._pen_pose(motion.target, draw_options.approach_dist, scale, orient_tool),
-                    last_joints,
-                    frame_pose,
-                )
+                    self._move_linear(self._pen_pose(last_xy, clearance, scale, orient_tool))
+                self._move_linear(self._pen_pose(motion.target, clearance, scale, orient_tool))
                 self._move_linear(self._pen_pose(motion.target, 0, scale, orient_tool))
                 pen_down = True
                 last_xy = motion.target
@@ -240,11 +227,7 @@ class RoboDrawer:
                 last_xy = motion.target
             elif motion.kind == "retract":
                 if pen_down and last_xy is not None:
-                    last_joints = self._move_joints(
-                        self._pen_pose(last_xy, draw_options.approach_dist, scale, orient_tool),
-                        last_joints,
-                        frame_pose,
-                    )
+                    self._move_linear(self._pen_pose(last_xy, clearance, scale, orient_tool))
                 pen_down = False
 
         self._logger.info("Returning robot to home position.")
