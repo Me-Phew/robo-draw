@@ -1,12 +1,19 @@
+import math
 import svgpathtools
 from mephew_python_commons import LoggerFactory
 from robodk import robolink, robomath
+
+from .sheet_setup import frame_matrix, pose_to_xyzrpw, rows_to_pose, save_sheet
 from tqdm import tqdm
 import numpy as np
 
 from .draw_options import DrawOptions
 from .settings import RoboDrawerSettings
 from .planner import plan_drawing
+
+
+def _distance_mm(a: tuple[float, float, float], b: tuple[float, float, float]) -> float:
+    return math.sqrt(sum((a[i] - b[i]) ** 2 for i in range(3)))
 
 
 class RoboDrawer:
@@ -79,6 +86,88 @@ class RoboDrawer:
         self._RDK.setRunMode(robolink.RUNMODE_RUN_ROBOT)
         self._logger.info("Set RoboDK to run on robot mode.")
 
+    def teach_sheet(self, output, frame_name: str, tool_name: str, approach_dist: int) -> None:
+        """Trzy dotknięcia pisakiem: róg kartki, plus X, plus Y. Zapisuje JSON i układy w RoboDK."""
+        tool = self._ensure_tool(tool_name)
+        self._robot.setTool(tool)
+        print("Aktywna końcówka to czubek pisaka. Dojazd rób tym czubkiem.")
+        origin = self._teach_point("1/3  Róg kartki, początek XY. Przesuń robota i naciśnij Enter.")
+        x_point = self._teach_point(
+            "2/3  Dolna krawędź, kierunek plus X. Przesuń robota i naciśnij Enter.",
+            (origin,),
+        )
+        y_point = self._teach_point(
+            "3/3  Lewa krawędź, kierunek plus Y. Przesuń robota i naciśnij Enter.",
+            (origin, x_point),
+        )
+
+        rows = [[round(value, 4) for value in row] for row in frame_matrix(origin, x_point, y_point)]
+        frame = self._ensure_frame(frame_name)
+        frame.setPoseAbs(rows_to_pose(rows))
+        tool_pose = self._robot.PoseTool()
+        tool.setPoseTool(tool_pose)
+
+        sheet = {
+            "version": 1,
+            "robot_name": self._robot.Name(),
+            "frame_item_name": frame_name,
+            "tool_item_name": tool_name,
+            "approach_dist": approach_dist,
+            "frame_pose": rows,
+            "frame_xyzrpw": pose_to_xyzrpw(rows_to_pose(rows)),
+            "tool_pose_xyzrpw": pose_to_xyzrpw(tool_pose),
+            "points_mm": {
+                "origin": [round(value, 3) for value in origin],
+                "x": [round(value, 3) for value in x_point],
+                "y": [round(value, 3) for value in y_point],
+            },
+        }
+        save_sheet(output, sheet)
+        print(f"Układ {frame_name} i pisak {tool_name} zapisane w {output}")
+
+    def apply_sheet(self, sheet: dict) -> None:
+        """Wstaw zapisany układ kartki i końcówkę pisaka do otwartej stacji."""
+        frame = self._ensure_frame(sheet["frame_item_name"])
+        frame.setPoseAbs(rows_to_pose(sheet["frame_pose"]))
+        tool = self._ensure_tool(sheet["tool_item_name"])
+        tool.setPoseTool(robomath.xyzrpw_2_pose(sheet["tool_pose_xyzrpw"]))
+        self._robot.setTool(tool)
+        self._robot.setPoseFrame(frame)
+        self._logger.info(
+            f"Wczytano setup: układ {sheet['frame_item_name']}, pisak {sheet['tool_item_name']}."
+        )
+
+    def _teach_point(
+        self,
+        prompt: str,
+        blocked: tuple[tuple[float, float, float], ...] = (),
+    ) -> tuple[float, float, float]:
+        while True:
+            input(prompt + " ")
+            point = self._tcp_in_station()
+            if any(_distance_mm(point, earlier) < 1.0 for earlier in blocked):
+                print("   To ten sam punkt. Przesuń robota w symulatorze i naciśnij Enter jeszcze raz.")
+                continue
+            print(f"   {point[0]:.1f}, {point[1]:.1f}, {point[2]:.1f} mm")
+            return point
+
+    def _tcp_in_station(self) -> tuple[float, float, float]:
+        """Czubek aktywnego narzędzia w układzie stacji. PoseAbs robota to tylko baza."""
+        pose = self._robot.PoseAbs() * self._robot.PoseFrame() * self._robot.Pose()
+        return (float(pose[0, 3]), float(pose[1, 3]), float(pose[2, 3]))
+
+    def _ensure_frame(self, name: str):
+        item = self._RDK.Item(name, robolink.ITEM_TYPE_FRAME)
+        if item.Valid():
+            return item
+        return self._RDK.AddFrame(name)
+
+    def _ensure_tool(self, name: str):
+        item = self._RDK.Item(name, robolink.ITEM_TYPE_TOOL)
+        if item.Valid():
+            return item
+        return self._robot.AddTool(robomath.eye(4), name)
+
     def draw(self, draw_options: DrawOptions) -> None:
         if not draw_options.svg_path.exists():
             self._logger.error(f"SVG file not found: {draw_options.svg_path}")
@@ -117,6 +206,7 @@ class RoboDrawer:
             raise ValueError(f"Tool item '{draw_options.tool_item_name}' not found.")
 
         self._logger.info(f"Tool item '{draw_options.tool_item_name}' obtained.")
+        self._robot.setTool(self._tool)
 
         if not draw_options.use_visual_simulation:
             self._pixel = None

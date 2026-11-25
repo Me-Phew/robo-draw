@@ -58,6 +58,19 @@ def test_mesh_keeps_boundary_only():
     assert drawn < 40
 
 
+def test_sheet_frame_points_up():
+    from robo_draw.core.sheet_setup import frame_matrix
+
+    flat = frame_matrix((0, 0, 10), (100, 0, 10), (0, 80, 10))
+    assert abs(flat[0][3]) < 1e-6
+    assert abs(flat[2][3] - 10) < 1e-6
+    assert flat[0][0] > 0.99
+    assert flat[2][2] > 0.99
+
+    mirrored = frame_matrix((0, 0, 0), (50, 0, 0), (0, -40, 0))
+    assert mirrored[2][2] > 0.99
+
+
 def test_straight_stroke_is_one_line():
     path = svgpathtools.Path(svgpathtools.Line(0j, 40 + 0j))
     plan = plan_drawing([path], scale=1.0)
